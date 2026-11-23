@@ -1,0 +1,269 @@
+"""
+Kalkulator Ilmiah Python (mode terminal)
+----------------------------------------
+Fitur:
+  - Operasi dasar: + - * / // % ** dan tanda kurung
+  - Trigonometri: sin, cos, tan, asin, acos, atan
+  - Hiperbolik: sinh, cosh, tanh
+  - Logaritma & akar: log (basis 10), ln, log2, sqrt, cbrt, exp
+  - Lainnya: abs, factorial (atau tanda !), round, floor, ceil, derajat, radian
+  - Konstanta: pi, e
+  - Mode sudut: DEG (derajat) atau RAD (radian)
+  - Memori hasil terakhir: ans
+
+Cara pakai:
+  python kalkulator.py
+
+Contoh input:
+  sin(30)
+  cos(60) + tan(45)
+  sqrt(16) * 2
+  5!
+  log(1000)
+  2 ** 10
+"""
+
+import ast
+import math
+import operator
+import re
+
+# ---------------------------------------------------------------------------
+# Pengaturan mode sudut
+# ---------------------------------------------------------------------------
+mode_sudut = "DEG"  # "DEG" = derajat, "RAD" = radian
+
+
+def ke_radian(x):
+    """Ubah input sudut ke radian sesuai mode aktif."""
+    return math.radians(x) if mode_sudut == "DEG" else x
+
+
+def dari_radian(x):
+    """Ubah hasil sudut (radian) ke satuan sesuai mode aktif."""
+    return math.degrees(x) if mode_sudut == "DEG" else x
+
+
+def bulatkan_kecil(hasil):
+    """Rapikan error floating point, mis. sin(180) = 1.2e-16 -> 0."""
+    if isinstance(hasil, float):
+        if abs(hasil) < 1e-12:
+            return 0
+        pembulatan = round(hasil, 12)
+        if pembulatan == int(pembulatan) and abs(pembulatan) < 1e15:
+            return int(pembulatan)
+        return pembulatan
+    return hasil
+
+
+# ---------------------------------------------------------------------------
+# Fungsi-fungsi yang diizinkan
+# ---------------------------------------------------------------------------
+def tan_aman(x):
+    rad = ke_radian(x)
+    # Cek apakah sudut mendekati 90 + k*180 derajat (tan tak terdefinisi)
+    if abs(math.cos(rad)) < 1e-12:
+        raise ValueError("tan tidak terdefinisi untuk sudut ini")
+    return math.tan(rad)
+
+
+def faktorial(x):
+    if x < 0 or x != int(x):
+        raise ValueError("faktorial hanya untuk bilangan bulat >= 0")
+    if x > 500:
+        raise ValueError("angka faktorial terlalu besar")
+    return math.factorial(int(x))
+
+
+FUNGSI = {
+    # Trigonometri
+    "sin": lambda x: math.sin(ke_radian(x)),
+    "cos": lambda x: math.cos(ke_radian(x)),
+    "tan": tan_aman,
+    "asin": lambda x: dari_radian(math.asin(x)),
+    "acos": lambda x: dari_radian(math.acos(x)),
+    "atan": lambda x: dari_radian(math.atan(x)),
+    # Hiperbolik
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "tanh": math.tanh,
+    # Logaritma, akar, eksponen
+    "log": math.log10,
+    "log10": math.log10,
+    "log2": math.log2,
+    "ln": math.log,
+    "sqrt": math.sqrt,
+    "cbrt": lambda x: math.copysign(abs(x) ** (1 / 3), x),
+    "exp": math.exp,
+    # Lain-lain
+    "abs": abs,
+    "round": round,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "factorial": faktorial,
+    "derajat": math.degrees,  # radian -> derajat
+    "radian": math.radians,   # derajat -> radian
+}
+
+KONSTANTA = {
+    "pi": math.pi,
+    "e": math.e,
+}
+
+OPERATOR_BINER = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+
+OPERATOR_UNER = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+
+# ---------------------------------------------------------------------------
+# Evaluator aman (tanpa eval() mentah)
+# ---------------------------------------------------------------------------
+def evaluasi_node(node, ans):
+    if isinstance(node, ast.Expression):
+        return evaluasi_node(node.body, ans)
+
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return node.value
+        raise ValueError("hanya angka yang diperbolehkan")
+
+    if isinstance(node, ast.BinOp):
+        tipe = type(node.op)
+        if tipe not in OPERATOR_BINER:
+            raise ValueError("operator tidak didukung")
+        kiri = evaluasi_node(node.left, ans)
+        kanan = evaluasi_node(node.right, ans)
+        if tipe is ast.Pow and abs(kanan) > 10000:
+            raise ValueError("pangkat terlalu besar")
+        return OPERATOR_BINER[tipe](kiri, kanan)
+
+    if isinstance(node, ast.UnaryOp):
+        tipe = type(node.op)
+        if tipe not in OPERATOR_UNER:
+            raise ValueError("operator tidak didukung")
+        return OPERATOR_UNER[tipe](evaluasi_node(node.operand, ans))
+
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in FUNGSI:
+            nama = getattr(node.func, "id", "?")
+            raise ValueError(f"fungsi '{nama}' tidak dikenal")
+        argumen = [evaluasi_node(a, ans) for a in node.args]
+        return FUNGSI[node.func.id](*argumen)
+
+    if isinstance(node, ast.Name):
+        if node.id == "ans":
+            return ans
+        if node.id in KONSTANTA:
+            return KONSTANTA[node.id]
+        raise ValueError(f"nama '{node.id}' tidak dikenal")
+
+    raise ValueError("ekspresi tidak valid")
+
+
+def siapkan_ekspresi(teks):
+    """Ubah notasi umum ke sintaks Python."""
+    teks = teks.strip().lower()
+    teks = teks.replace("^", "**").replace("×", "*").replace("÷", "/")
+    teks = teks.replace("π", "pi").replace("√", "sqrt")
+    teks = teks.replace(",", ".")  # koma desimal gaya Indonesia
+    # 5! atau (3+2)! -> factorial(5) / factorial((3+2))
+    teks = re.sub(r"(\d+(?:\.\d+)?|\([^()]*\))!", r"factorial(\1)", teks)
+    # perkalian implisit: 2pi -> 2*pi, 3(4) -> 3*(4), 2sin(30) -> 2*sin(30)
+    teks = re.sub(r"(\d)\s*([a-z(])", r"\1*\2", teks)
+    teks = re.sub(r"\)\s*(\d|[a-z(])", r")*\1", teks)
+    return teks
+
+
+def hitung(teks, ans=0):
+    ekspresi = siapkan_ekspresi(teks)
+    pohon = ast.parse(ekspresi, mode="eval")
+    return bulatkan_kecil(evaluasi_node(pohon, ans))
+
+
+# ---------------------------------------------------------------------------
+# Antarmuka terminal
+# ---------------------------------------------------------------------------
+BANTUAN = """
+=== BANTUAN KALKULATOR ILMIAH ===
+Operator : + - * / // % ** (atau ^)  dan tanda kurung ( )
+Trigonometri : sin  cos  tan  asin  acos  atan
+Hiperbolik   : sinh cosh tanh
+Logaritma    : log (basis 10)  ln  log2  exp
+Akar         : sqrt  cbrt
+Lainnya      : abs  round  floor  ceil  factorial (atau 5!)
+Konversi     : derajat(x) radian->derajat, radian(x) derajat->radian
+Konstanta    : pi  e
+Memori       : ans (hasil perhitungan terakhir)
+
+Perintah:
+  mode deg   -> sudut dalam derajat (default)
+  mode rad   -> sudut dalam radian
+  bantuan    -> tampilkan bantuan ini
+  keluar     -> tutup program
+
+Contoh: sin(30)   cos(pi/3)   sqrt(16)*2   5!   log(1000)   ans+10
+"""
+
+
+def main():
+    global mode_sudut
+    ans = 0
+    print("=" * 40)
+    print("   KALKULATOR ILMIAH PYTHON")
+    print("=" * 40)
+    print("Ketik 'bantuan' untuk panduan, 'keluar' untuk berhenti.")
+
+    while True:
+        try:
+            masukan = input(f"\n[{mode_sudut}] >>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSampai jumpa!")
+            break
+
+        if not masukan:
+            continue
+
+        perintah = masukan.lower()
+        if perintah in ("keluar", "exit", "quit", "q"):
+            print("Sampai jumpa!")
+            break
+        if perintah in ("bantuan", "help", "?"):
+            print(BANTUAN)
+            continue
+        if perintah.startswith("mode"):
+            bagian = perintah.split()
+            if len(bagian) == 2 and bagian[1] in ("deg", "rad"):
+                mode_sudut = bagian[1].upper()
+                nama = "derajat" if mode_sudut == "DEG" else "radian"
+                print(f"Mode sudut diubah ke {mode_sudut} ({nama}).")
+            else:
+                print("Gunakan: mode deg  atau  mode rad")
+            continue
+
+        try:
+            hasil = hitung(masukan, ans)
+            ans = hasil
+            print(f"= {hasil}")
+        except ZeroDivisionError:
+            print("Error: pembagian dengan nol")
+        except OverflowError:
+            print("Error: hasil terlalu besar")
+        except SyntaxError:
+            print("Error: format ekspresi salah")
+        except (ValueError, TypeError) as err:
+            print(f"Error: {err}")
+
+
+if __name__ == "__main__":
+    main()
